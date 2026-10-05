@@ -137,6 +137,15 @@ input::placeholder {{ color:#8a8f98 !important; }}
 .hcard .v {{ font-size:1rem; font-weight:700; color:{WHITE}; }}
 .hcard .r {{ font-size:0.85rem; color:{GREY}; }}
 .banner {{ border-left:6px solid; background:rgba(8,8,28,0.78); border-radius:8px; padding:12px 16px; margin:8px 0; }}
+.rhero {{ display:flex; align-items:center; gap:22px; background:rgba(8,8,28,0.82); border:2px solid;
+          border-radius:18px; padding:18px 24px; margin:14px 0; }}
+.rhero .ring {{ width:104px; height:104px; border-radius:50%; display:flex; align-items:center;
+               justify-content:center; flex:none; }}
+.rhero .ring span {{ width:78px; height:78px; border-radius:50%; background:#08081c; display:flex;
+                    align-items:center; justify-content:center; font-size:1.9rem; font-weight:800; }}
+.rhero .rt {{ font-size:1.05rem; color:{CYAN}; font-weight:700; }}
+.rhero .rs {{ font-size:1.7rem; font-weight:800; margin:2px 0; }}
+.rhero .rr {{ font-size:0.9rem; color:{GREY}; }}
 </style>
 <div class='shoot s1'></div><div class='shoot s2'></div>
 """, unsafe_allow_html=True)
@@ -343,6 +352,276 @@ def extra_fields(d):
 
 
 # =====================================================================
+# WEEKLY REPORT: shown under the weekly test (score, cards, plain words, EDA charts)
+# =====================================================================
+SCORE_PTS = {"green": 100, "yellow": 60, "red": 20}
+MOOD_COL = {"Happy": COL["green"], "Calm": CYAN, "Nothing": GREY, "Sad": COL["yellow"], "Angry": COL["red"]}
+
+
+def _orth(r):
+    """Stand test: heart-rate rise and systolic BP drop after standing."""
+    hr0 = r.get("hr_0min", r["hr_3min"])
+    s0 = r.get("sys_0min", r["sys_3min"])
+    rise = max(r[f"hr_{t}min"] for t in (3, 7, 15)) - hr0
+    drop = s0 - min(r[f"sys_{t}min"] for t in (3, 7, 15))
+    return rise, drop
+
+
+def _rcard(title, value, note, color):
+    c = COL[color]
+    return (f"<div class='hcard' style='border-color:{c}'><div class='t' style='color:{CYAN}'>{title}</div>"
+            f"<div class='s' style='color:{c}'>{value}</div><div class='r'>{note}</div></div>")
+
+
+def _style(ch, title, h=230):
+    return (ch.properties(title=title, height=h, background="#05051a")
+            .configure_axis(labelColor=WHITE, titleColor=CYAN, gridColor="#222", domainColor="#444")
+            .configure_legend(labelColor=WHITE, titleColor=CYAN)
+            .configure_title(color=PINK, fontSize=14)
+            .configure_view(stroke=None))
+
+
+def _line(df, x, y, title, ytitle, xtitle, color=CYAN, ref=None, domain=None):
+    scale = alt.Scale(domain=domain) if domain else alt.Scale(zero=False)
+    ch = alt.Chart(df).mark_line(point=alt.OverlayMarkDef(filled=True, size=80), color=color, strokeWidth=3).encode(
+        x=alt.X(f"{x}:O", title=xtitle), y=alt.Y(f"{y}:Q", title=ytitle, scale=scale), tooltip=[x, y])
+    if ref is not None:
+        ch = ch + alt.Chart(pd.DataFrame({"ref": [ref]})).mark_rule(
+            color=COL["yellow"], strokeDash=[6, 4]).encode(y="ref:Q")
+    return _style(ch, title)
+
+
+def _bars(df, x, y, title, ytitle, xtitle):
+    """Bar chart where every bar uses the hex color stored in the 'color' column."""
+    ch = alt.Chart(df).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+        x=alt.X(f"{x}:O", title=xtitle), y=alt.Y(f"{y}:Q", title=ytitle),
+        color=alt.Color("color:N", scale=None, legend=None), tooltip=[x, y])
+    return _style(ch, title)
+
+
+def _show(ch):
+    st.altair_chart(ch, width="stretch")
+
+
+def show_weekly_report():
+    """Weekly report under the weekly test: health score, status cards, plain words and EDA charts."""
+    rows = ss.weekly
+    if not rows:
+        return
+    p, ents = ss.profile, ss.entries
+    cur, first = rows[-1], rows[0]
+    prev = rows[-2] if len(rows) > 1 else None
+    wk_no = len(rows)
+    tests, daily = [], []   # each item: (title, value, note, color, tip)
+
+    def delta(key, unit):
+        return "first weekly test" if prev is None else f"{cur[key] - prev[key]:+.1f} {unit} vs last week"
+
+    # ---- this week's tests
+    usual = p["weight_usual_kg"]
+    wpc = (cur["weight_kg"] - usual) / usual * 100
+    c = "green" if abs(wpc) < 2 else "yellow" if abs(wpc) < 5 else "red"
+    tests.append(("Weight", f"{cur['weight_kg']:.1f} kg", f"{wpc:+.1f}% vs before flight | {delta('weight_kg', 'kg')}", c,
+                  "Eat enough calories and protein and keep up strength work. Talk to a dietitian if it continues."))
+
+    if len(rows) == 1 or not first["grip_kg"]:
+        c, gnote = "green", "baseline set - later weeks are compared with this"
+    else:
+        gpc = (cur["grip_kg"] - first["grip_kg"]) / first["grip_kg"] * 100
+        c = "green" if gpc >= -5 else "yellow" if gpc >= -10 else "red"
+        gnote = f"{gpc:+.1f}% vs your first test | {delta('grip_kg', 'kg')}"
+    tests.append(("Grip strength", f"{cur['grip_kg']:.0f} kg", gnote, c,
+                  "Muscle may be weakening. Add resistance (ARED) sessions and check protein intake."))
+
+    rise, drop = _orth(cur)
+    c = "green" if rise <= 20 else "yellow" if rise <= 30 else "red"
+    tests.append(("Heart rate on standing", f"{rise:+.0f} bpm", "rise after standing | normal: under 20 bpm", c,
+                  "Your heart works hard to hold blood pressure. Drink fluids and stand up slowly."))
+    c = "green" if drop < 10 else "yellow" if drop < 20 else "red"
+    tests.append(("Blood pressure on standing", f"{-drop:+.0f} mmHg", "systolic change | normal: drop under 10",
+                  c, "A big drop means fainting risk. Hydrate, move slowly and tell the doctor."))
+
+    nv = int(bool(cur["blurry_vision"])) + int(bool(cur["headache"]))
+    vtxt = " and ".join(x for x, f in (("Blurry vision", cur["blurry_vision"]), ("Headache", cur["headache"])) if f)
+    tests.append(("Vision", vtxt or "Clear", "blur or headache check", ["green", "yellow", "red"][nv],
+                  "Report this to the flight surgeon. Eye pressure changes in space can cause blur and headache."))
+
+    uv = cur["urine_ml"]
+    tests.append(("Urine volume", f"{uv:.0f} mL", "normal: 1000-2500 mL", band(uv, (1000, 2500), (500, 3000)),
+                  "Adjust your fluid intake and recheck tomorrow."))
+
+    ph, ca = cur["ph"], cur["calcium_result"]
+    acid = cur.get("acidity_result", "Normal")
+    c = worst("green" if 5.0 <= ph <= 7.5 else "yellow", "green" if ca in ("Normal", "Not tested") else "yellow")
+    tests.append(("Urine dipstick", f"pH {ph:.1f}", f"{acid} | calcium {ca}", c,
+                  "Calcium or acidity is off. Drink more water and review calcium and vitamin D intake (kidney stone risk)."))
+
+    sn = cur["sex_notes"]
+    flag = any(k in sn for k in ("UTI", "discomfort", "Weak", "Painful"))
+    tests.append(("Cycle and breast health" if p["sex"] == "Female" else "Urinary and groin health",
+                  "Needs attention" if flag else "No concerns", sn, "yellow" if flag else "green",
+                  "Tell the medical team about these symptoms."))
+
+    # ---- last 7 daily check-ins
+    last = ents[-7:]
+    n0 = len(ents) - len(last) + 1
+    dd = pd.DataFrame([{"Check-in": n0 + i, "Heart rate": e.get("heart_rate", 70.0), "Sleep": e.get("sleep_hours", 7.5),
+                        "Stress": e.get("stress", 2), "Anxiety": e.get("anxiety", 2),
+                        "Radiation": e.get("radiation_msv", 0.7), "Fluid": e.get("fluid_l", 2.0),
+                        "Mood": e.get("mood", "Nothing")} for i, e in enumerate(last)])
+    lvl = lambda v: "green" if v <= 2.5 else "yellow" if v <= 3.5 else "red"
+    v = dd["Heart rate"].mean()
+    daily.append(("Heart rate (average)", f"{v:.0f} bpm", "normal: 50-100 bpm", band(v, (50, 100), (40, 110)),
+                  "Rest and recheck. Contact a doctor if it stays out of range."))
+    v = dd["Sleep"].mean()
+    daily.append(("Sleep (average)", f"{v:.1f} h", "normal: 7-9 hours", band(v, (7, 9), (6, 10)),
+                  "Fix your sleep schedule and keep the sleep area dark and quiet."))
+    v = dd["Stress"].mean()
+    daily.append(("Stress (average)", f"{v:.1f} / 5", "lower is better", lvl(v),
+                  "Make time for relaxation, hobbies and a call with family or the crew psychologist."))
+    v = dd["Anxiety"].mean()
+    daily.append(("Anxiety (average)", f"{v:.1f} / 5", "lower is better", lvl(v),
+                  "Try breathing exercises and talk to the crew psychologist."))
+    top = dd["Mood"].mode()[0]
+    low = dd["Mood"].isin(["Sad", "Angry"]).sum()
+    share = low / len(dd)
+    daily.append(("Mood (most common)", top, f"{low} of {len(dd)} check-ins sad or angry",
+                  "red" if share >= 0.5 else "yellow" if share >= 0.25 else "green",
+                  "Your mood has been low. Talk to someone you trust or the crew psychologist."))
+    v = dd["Fluid"].mean()
+    daily.append(("Fluid intake (average)", f"{v:.1f} L", "normal: 2-3.5 L per day", band(v, (2.0, 3.5), (1.5, 4.5)),
+                  "Drink more fluids through the day."))
+    v = dd["Radiation"].mean()
+    daily.append(("Radiation (average)", f"{v:.2f} mSv", f"total {dd['Radiation'].sum():.1f} mSv | normal under 1 mSv/day",
+                  band(v, (0, 1.0), (0, 1.5)), "Limit time in high-radiation areas and follow the crew protocol."))
+
+    allitems = tests + daily
+    score = round(sum(SCORE_PTS[i[3]] for i in allitems) / len(allitems))
+    overall = "green" if score >= 85 else "yellow" if score >= 60 else "red"
+    if overall == "green" and any(i[3] == "red" for i in allitems):
+        overall = "yellow"
+    verdict = {"green": "You are doing well", "yellow": "A few things to watch",
+               "red": "Needs attention - talk to the flight surgeon"}[overall]
+    oc = COL[overall]
+    vs = (f" | vs last week: weight {cur['weight_kg'] - prev['weight_kg']:+.1f} kg, "
+          f"grip {cur['grip_kg'] - prev['grip_kg']:+.1f} kg") if prev else ""
+
+    # ---- hero
+    st.markdown("---")
+    st.subheader(f"Weekly report - week {wk_no}")
+    st.markdown(
+        f"<div class='rhero' style='border-color:{oc}'>"
+        f"<div class='ring' style='background:conic-gradient({oc} {score * 3.6:.0f}deg, #1b1b3a 0)'>"
+        f"<span style='color:{oc}'>{score}</span></div>"
+        f"<div><div class='rt'>Weekly health score (out of 100)</div>"
+        f"<div class='rs' style='color:{oc}'>{verdict}</div>"
+        f"<div class='rr'>Mission day {cur['mission_day']} | {cur['ts'].strftime('%d %b %Y')}{vs}</div></div></div>",
+        unsafe_allow_html=True)
+
+    # ---- cards
+    for heading, group in (("This week's tests", tests), ("Your last 7 daily check-ins", daily)):
+        st.markdown(f"**{heading}**")
+        for i in range(0, len(group), 4):
+            cols = st.columns(4)
+            for col, (t, val, note, colr, _tip) in zip(cols, group[i:i + 4]):
+                col.markdown(_rcard(t, val, note, colr), unsafe_allow_html=True)
+
+    # ---- plain words
+    st.markdown("**In plain words**")
+    bad = sorted([i for i in allitems if i[3] != "green"], key=lambda i: RANK[i[3]])
+    for t, val, _n, colr, tip in bad:
+        st.markdown(f"{tint('<b>' + t + '</b>', colr)} is {tint(val, colr)}. {tip}", unsafe_allow_html=True)
+    good = [i[0] for i in allitems if i[3] == "green"]
+    if good:
+        banner(f"<b>Normal this week:</b> {', '.join(good)}.", "green")
+    if not bad:
+        st.markdown(f"{tint('Everything looks normal. Keep your routine.', 'green')}", unsafe_allow_html=True)
+
+    # ---- EDA charts
+    st.markdown("**Charts**")
+    t1, t2, t3 = st.tabs(["Stand test", "Weekly trends", "Daily life"])
+
+    with t1:
+        def stand_df(r, label):
+            return pd.DataFrame({"Minute": [0, 3, 7, 15], "Week": label,
+                                 "Heart rate": [r.get(f"hr_{t}min", r["hr_3min"]) for t in (0, 3, 7, 15)],
+                                 "Systolic BP": [r.get(f"sys_{t}min", r["sys_3min"]) for t in (0, 3, 7, 15)],
+                                 "Diastolic BP": [r.get(f"dia_{t}min", r["dia_3min"]) for t in (0, 3, 7, 15)]})
+        sd = pd.concat([stand_df(cur, "This week")] + ([stand_df(prev, "Last week")] if prev else []))
+        cols = st.columns(3)
+        for col, (field, yt) in zip(cols, (("Heart rate", "Heart rate (bpm)"), ("Systolic BP", "Systolic BP (mmHg)"),
+                                           ("Diastolic BP", "Diastolic BP (mmHg)"))):
+            ch = alt.Chart(sd).mark_line(point=alt.OverlayMarkDef(filled=True, size=80), strokeWidth=3).encode(
+                x=alt.X("Minute:O", title="Minutes standing"),
+                y=alt.Y(f"{field}:Q", title=yt, scale=alt.Scale(zero=False)),
+                color=alt.Color("Week:N", scale=alt.Scale(domain=["This week", "Last week"], range=[CYAN, PINK]),
+                                legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=["Minute", "Week", field])
+            with col:
+                _show(_style(ch, field))
+        st.caption("A healthy body keeps these lines flat. A big rise in heart rate or a drop in blood pressure "
+                   "while standing means the body is struggling with gravity.")
+
+    wk = pd.DataFrame([{"Week": i + 1, "Weight": r["weight_kg"], "Grip": r["grip_kg"], "Urine": r["urine_ml"],
+                        "pH": r["ph"], "HR rise": _orth(r)[0], "BP drop": _orth(r)[1]} for i, r in enumerate(rows)])
+    with t2:
+        a, b = st.columns(2)
+        with a:
+            _show(_line(wk, "Week", "Weight", "Weight (dashed line = before flight)", "kg", "Weekly test #", CYAN, ref=usual))
+        with b:
+            _show(_line(wk, "Week", "Grip", "Grip strength", "kg", "Weekly test #", PINK))
+        a, b = st.columns(2)
+        with a:
+            uc = wk.assign(color=wk["Urine"].map(lambda x: COL[band(x, (1000, 2500), (500, 3000))]))
+            _show(_bars(uc, "Week", "Urine", "Urine volume", "mL", "Weekly test #"))
+        with b:
+            _show(_line(wk, "Week", "pH", "Urine pH (dashed line = 7.5 upper limit)", "pH", "Weekly test #", CYAN, ref=7.5))
+        if len(wk) > 1:
+            st.markdown("**Summary of all weekly tests**")
+            st.dataframe(wk.drop(columns="Week").describe().loc[["mean", "min", "max"]].round(1),
+                         use_container_width=True)
+        else:
+            st.info("Charts become trend lines after your second weekly test.")
+
+    with t3:
+        if len(dd) < 2:
+            st.info("You have 1 daily check-in so far. Add more in Daily check-in to see trends.")
+        a, b = st.columns(2)
+        with a:
+            sa = dd.melt(id_vars="Check-in", value_vars=["Stress", "Anxiety"], var_name="Measure", value_name="Score")
+            ch = alt.Chart(sa).mark_line(point=alt.OverlayMarkDef(filled=True, size=80), strokeWidth=3).encode(
+                x=alt.X("Check-in:O", title="Check-in #"),
+                y=alt.Y("Score:Q", title="Score (1-5)", scale=alt.Scale(domain=[1, 5])),
+                color=alt.Color("Measure:N", scale=alt.Scale(domain=["Stress", "Anxiety"], range=[PINK, CYAN]),
+                                legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=["Check-in", "Measure", "Score"])
+            _show(_style(ch, "Stress and anxiety"))
+        with b:
+            sl = dd.assign(color=dd["Sleep"].map(lambda x: COL[band(x, (7, 9), (6, 10))]))
+            _show(_bars(sl, "Check-in", "Sleep", "Sleep (green = 7-9 h)", "hours", "Check-in #"))
+        a, b = st.columns(2)
+        with a:
+            _show(_line(dd, "Check-in", "Heart rate", "Heart rate", "bpm", "Check-in #", CYAN))
+        with b:
+            rd = dd.assign(color=dd["Radiation"].map(lambda x: COL[band(x, (0, 1.0), (0, 1.5))]))
+            _show(_bars(rd, "Check-in", "Radiation", "Radiation dose", "mSv", "Check-in #"))
+        a, b = st.columns(2)
+        with a:
+            mc = dd.groupby("Mood").size().reset_index(name="Days")
+            mc["color"] = mc["Mood"].map(MOOD_COL)
+            ch = alt.Chart(mc).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
+                x=alt.X("Days:Q", title="Check-ins", axis=alt.Axis(tickMinStep=1)), y=alt.Y("Mood:N", title=None),
+                color=alt.Color("color:N", scale=None, legend=None), tooltip=["Mood", "Days"])
+            _show(_style(ch, "Mood"))
+        with b:
+            fl = dd.assign(color=dd["Fluid"].map(lambda x: COL[band(x, (2.0, 3.5), (1.5, 4.5))]))
+            _show(_bars(fl, "Check-in", "Fluid", "Fluid intake (green = 2-3.5 L)", "litres", "Check-in #"))
+
+    with st.expander("All weekly test records (raw data)"):
+        st.dataframe(pd.DataFrame(ss.weekly), use_container_width=True)
+
+
+# =====================================================================
 # SCREEN 1: WELCOME  ->  SCREEN 2: ABOUT YOU  ->  the app
 # =====================================================================
 if ss.stage == "welcome":
@@ -482,6 +761,7 @@ elif page == "Weekly tests":
         if left.total_seconds() > 0:
             banner(f"<b>Locked.</b> Next weekly test opens in {left.days}d {left.seconds // 3600}h "
                    f"{(left.seconds % 3600) // 60}m {left.seconds % 60}s", "yellow")
+            show_weekly_report()
             st.stop()
     c1, c2, c3 = st.columns(3)
     wk_w = c1.number_input("Weight (kg)", 30.0, 200.0, float(latest["weight_kg"]), step=0.5)
@@ -535,7 +815,7 @@ elif page == "Weekly tests":
         ss.profile["height_cm"] = float(wk_h)
         st.success("Saved. The next weekly test opens in 7 days.")
     if ss.weekly:
-        st.dataframe(pd.DataFrame(ss.weekly), use_container_width=True)
+        show_weekly_report()
 
 # =============== RETURN TO EARTH ===============
 elif page == "Return to Earth":
