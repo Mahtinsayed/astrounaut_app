@@ -6,7 +6,7 @@ import pandas as pd
 import altair as alt
 import streamlit as st
 
-st.set_page_config(page_title="Astronaut Health", page_icon=None, layout="wide")
+st.set_page_config(page_title="Althea", page_icon=None, layout="wide")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ss = st.session_state
@@ -627,7 +627,7 @@ def show_weekly_report():
 if ss.stage == "welcome":
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
-        st.markdown("<div class='hero'><div class='big'></div><h1>Astronaut Health Monitor</h1>"
+        st.markdown("<div class='hero'><div class='big'></div><h1>Althea</h1>"
                     "<p>Enter your own numbers and see how your bone, heart, sleep, immune system, "
                     "weight, food and muscle are doing.</p></div>", unsafe_allow_html=True)
         st.write("")
@@ -712,7 +712,7 @@ if st.sidebar.button("Start over"):
     ss.weekly, ss.landing, ss.exercise = [], [], []
     st.rerun()
 
-st.title("Astronaut Health Monitor")
+st.title("Althea")
 st.caption("Prototype with simple rules - not a medical device")
 
 # =============== DASHBOARD ===============
